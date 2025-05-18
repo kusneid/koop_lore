@@ -12,13 +12,13 @@ def select_epochs(n_examples: int) -> int:
     if n_examples < 50:
         return 7
     elif n_examples < 200:
-        return 6
+        return 4
     elif n_examples < 500:
-        return 5
-    elif n_examples < 1000:
         return 3
-    else:
+    elif n_examples < 1000:
         return 2
+    else:
+        return 1
 
 def train_all(input_dir: Path, output_dir: Path, model_name: str):
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,33 @@ def train_all(input_dir: Path, output_dir: Path, model_name: str):
         train_one(str(txt), model_name, str(dest), epochs)
     print("все модели сохранены в", output_dir)
 
-def generate_text(prompt: str, agent: str):
+def generate_text_qa(prompt: str, agent: str) -> str:
+    model_dir = f"models/{agent}"
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
+    model     = AutoModelForCausalLM.from_pretrained(model_dir, local_files_only=True)
+    device = 0 if torch.cuda.is_available() else -1
+
+    generator = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=device
+    )
+
+    formatted = f"Вопрос: {prompt}\nОтвет:"
+    out = generator(
+        formatted,
+        max_new_tokens=50,
+        do_sample=True,
+        temperature=0.8,
+        top_k=20,
+        top_p=0.9,
+        repetition_penalty=1.15,
+    )[0]["generated_text"]
+
+    return out.split("Ответ:", 1)[-1].strip()
+
+def generate_text_default(prompt: str, agent: str):
     model_dir = Path("models") / agent
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
     model     = AutoModelForCausalLM.from_pretrained(str(model_dir), local_files_only=True)
@@ -50,18 +76,17 @@ def generate_text(prompt: str, agent: str):
         prompt,
         max_length=50,
         do_sample=True,
-        temperature=0.95,
-        top_k=30,
-        top_p=1.0,
-        repetition_penalty=1.2
+        temperature=0.8,
+        top_k=20,
+        top_p=0.9,
+        repetition_penalty=1.15
     )[0]["generated_text"]
-    print(out)
     return out
 
 def main():
     # dataload()
     train_all(
-        input_dir=Path("data"),
+        input_dir=Path("data2"),
         output_dir=Path("models"),
         model_name="sberbank-ai/rugpt3small_based_on_gpt2"
     )
