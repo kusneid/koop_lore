@@ -1,60 +1,52 @@
+import torch
+from pathlib import Path
 from transformers import (
-    GPT2LMHeadModel,
-    GPT2Tokenizer,
+    AutoTokenizer,
+    AutoModelForCausalLM,
     Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling
 )
 from datasets import Dataset
-from pathlib import Path
 
-def group_messages(filepath, group_size=8):
-    with open(filepath, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if len(line.strip()) > 8]
+def group_messages(path, size=8):
+    lines = [l.strip() for l in open(path, encoding="utf-8") if len(l.strip()) > 8]
+    return [" ".join(lines[i:i+size]) for i in range(0, len(lines), size)]
 
-    grouped = [" ".join(lines[i:i+group_size]) for i in range(0, len(lines), group_size)]
-    return grouped
+def train_one(data_path: str, model_name: str, out_dir: str, epochs: int = 3):
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
 
-def train_model(user_name: str, data_path: str, output_dir: str, epochs: int = 6):
-    tokenizer = GPT2Tokenizer.from_pretrained("sberbank-ai/rugpt3small_based_on_gpt2")
-    model = GPT2LMHeadModel.from_pretrained("sberbank-ai/rugpt3small_based_on_gpt2")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+
     texts = group_messages(data_path)
-    dataset = Dataset.from_dict({"text": texts})
+    ds = Dataset.from_dict({"text": texts})
+    def tok(ex):
+        return tokenizer(ex["text"], truncation=True, padding="max_length", max_length=128)
+    tok_ds = ds.map(tok, batched=True).with_format("torch")
 
-    def tokenize(example):
-        return tokenizer(example["text"], truncation=True, padding="max_length", max_length=256)
+    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    tokenized_dataset = dataset.map(tokenize, batched=True)
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    training_args = TrainingArguments(
-        output_dir=output_dir,
+    args = TrainingArguments(
+        output_dir=out_dir,
         overwrite_output_dir=True,
         num_train_epochs=epochs,
-        per_device_train_batch_size=2,
-        save_steps=500,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        fp16=(device == "cuda"),
+        logging_steps=50,
+        save_steps=200,
         save_total_limit=1,
-        logging_steps=100,
-        logging_dir=f"{output_dir}/logs",
+        report_to=[]
     )
 
     trainer = Trainer(
         model=model,
-        args=training_args,
-        train_dataset=tokenized_dataset,
-        data_collator=data_collator,
+        args=args,
+        train_dataset=tok_ds,
+        data_collator=collator
     )
-
     trainer.train()
-    trainer.save_model(output_dir)
-    tokenizer.save_pretrained(output_dir)
-
-if __name__ == "__main__":
-    input_dir = Path("data")
-    output_base_dir = Path("models")
-    output_base_dir.mkdir(parents=True, exist_ok=True)
-
-    for file in input_dir.glob("*.txt"):
-        user_name = file.stem
-        output_path = output_base_dir / user_name
-        train_model(user_name, str(file), str(output_path))
+    model.save_pretrained(out_dir)
+    tokenizer.save_pretrained(out_dir)
